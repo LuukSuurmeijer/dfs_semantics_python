@@ -1,4 +1,4 @@
-:- use_module('src/dfs_main.pl').
+:- use_module('../src/dfs_main.pl').
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% World Specification %%%
@@ -17,7 +17,7 @@ property(tease(Person1,Person2)) :- person(Person1), person(Person2).
 person('jess').
 person('nick').
 person('winston').
-person('zelda').
+person('mike').
 
 %%% Hard constraints %%%
 
@@ -36,6 +36,10 @@ probability(read('nick'),top,0.4).
 % Jess likes reading over sleeping
 probability(sleep('jess'),top,0.4).
 probability(read('jess'),top,0.8).
+
+% Mike likes reading over sleeping
+probability(sleep('mike'),top,0.3).
+probability(read('mike'),top,0.7).
 
 % Winston teases Nick more often than (he teases) Jess
 probability(tease('winston','nick'),top,0.7).
