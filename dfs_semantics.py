@@ -6,18 +6,43 @@ from typing import *
 from functools import reduce
 import nltk.sem.logic as fol
 from collections import defaultdict
+import sys
+import re
 
 #Parsing first order logic.
 PARSE = fol.Expression.fromstring
 SYM = fol.Tokens()
 
 ### Practical ###
+def set_average(set):
+    matrix = set_to_matrix(set)
+    return np.sum(matrix, axis=1, keepdims=True) / len(set)
+
 def marix_to_set(Matrix):
     return set(map(tuple, Matrix.T))
 
 def set_to_matrix(Set):
     array = np.array([elem for elem in Set])
     return array.T
+
+def deconstruct_expression(expression: str) -> str:
+    """
+    Function to remove the outermost quantifier in a string formatted like an nltk.sem.logic.Expression
+    """
+    match = re.match(rf'({SYM.EXISTS}|{SYM.ALL}) (([a-z][0-9]*)(?: ))*(([a-z][0-9]*)(?:\.))', expression)
+    variablebinder = match[0].strip('.').split(' ')
+    quantifier = variablebinder[0]
+    variables = variablebinder[1:]
+
+    if len(variables) > 1: #if there are more than 1 variable, we need to only delete the first one
+        new_variables = variables[1:]
+        new_quantifier = quantifier + ' ' + ' '.join(new_variables) #this is bad, but what do?
+        expression = expression.strip(f'{variablebinder}')
+        return new_quantifier + expression
+
+    else: #if theres only one variable, we remove the whole quantifier
+        remove = ' '.join(variablebinder) + '.'
+        return expression.split(f'{remove}')[-1]
 
 ### Meaning Vector Object ###
 class MeaningVec:
@@ -34,6 +59,16 @@ class MeaningVec:
 
     def __repr__(self):
         return f"{self.name}"
+
+### Meaning Set Object
+class MeaningSet:
+    def __init__(self, word, world, name=None):
+        self.set = world.getSemantics(word)
+        self.name = PARSE(name)
+        self.real = set_average(self.set)
+
+    def __len__(self):
+        return len(self.set)
 
 MeaningSet = NewType("MeaningSet", Set[MeaningVec]) # set of meaning vectors
 
@@ -104,6 +139,7 @@ class MeaningSpace:
         self.prop_dict = {prop.name : prop for prop in self.propositions} #from fol expressions to MeaningVectors, TODO: I add all vectors that are computed here for memoization
         self.dim = self.matrix.shape
         self.universe = self.find_universe() #dictionary of entities and relations
+        self._calls=0
 
     def __len__(self):
         return len(self.propositions)
@@ -112,6 +148,9 @@ class MeaningSpace:
         return f"{set([self.prop_list[elem][1] for elem in matrix_to_set(self.matrix)])}"
 
     def find_universe(self):
+        """
+        Construct the universe for this meaning space. The entities and the predicates (and their possible inputs)
+        """
         universe = defaultdict(lambda : set())
         for prop in self.propositions:
             assert prop.name.is_atom(), "Only atomic propositions allowed in model definition"
@@ -155,7 +194,16 @@ class MeaningSpace:
         except KeyError:
             print(set([f'v_{i}' for i, elem in enumerate(Set)]))
 
-    def modelEntailment(self, MeaningVec):
+    def prettyprint(self):
+        rownames = [f"M{i}" for i, row in enumerate(self.matrix)]
+        columnnames = [vector.name for vector in list(self.propositions)]
+        df = pd.DataFrame(self.matrix, index=rownames, columns=columnnames)
+        print(df)
+
+    def modelEntailment(self, MeaningVec: MeaningVec):
+        """
+        Returns all atomic propositions in the meaning spaces that entail MeaningVec
+        """
         assert len(MeaningVec) == self.dim[0]
         entailments = []
         for p in self.propositions:
@@ -164,6 +212,10 @@ class MeaningSpace:
         return entailments
 
     def infer_meaningvec(self, expression: fol.Expression) -> MeaningVec:
+        """
+        Recursively infers the meaning vector in the meaning space for an arbitrary first order logic expression, granted the syntax is correct.
+        """
+        self._calls += 1
         #Stop condition: we arrive at an atomic proposition
         if self.is_atomic(expression):
             return self.prop_dict[expression]
@@ -180,7 +232,12 @@ class MeaningSpace:
             except AttributeError: #otherwise maybe a quantifier
                 operator = expression.getQuantifier()
                 variable = expression.variable
-                term = PARSE(str(expression).split(f'{operator} {variable}.')[-1])
+                term = PARSE(deconstruct_expression(str(expression)))
+                #a predicate with a free variable has no meaning
+                #introduce dummy variable, since it will be existentially closed anyway
+                #always choose a unique dummy
+                dummy = [e for e in list(self.universe['entities']) if e not in term.constants()][0]
+                term = term.replace(variable, PARSE(dummy.name))
 
             if operator == f'{SYM.AND}':
                 self.prop_dict[expression] = conjunction(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
@@ -190,37 +247,68 @@ class MeaningSpace:
                 self.prop_dict[expression] = implication(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
             elif operator == f'{SYM.IFF}':
                 self.prop_dict[expression] = equivalence(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
-            elif operator == f'{SYM.EXISTS}': ###ONLY WORKS FOR 1 QUANTIFIER TODO: reconstruct using regex
-                self.prop_dict[expression] = self.exist(self.infer_meaningvec(term), variable)
-
+            elif operator == f'{SYM.EXISTS}':
+                self.prop_dict[expression] = self.exist(self.infer_meaningvec(term),  dummy.name)
+            elif operator == f'{SYM.ALL}':
+                self.prop_dict[expression] = self.all(self.infer_meaningvec(term), dummy.name)
 
         return self.prop_dict[expression]
 
-    #only works 1 embedding deep now
+    def assignment_function(self, phi: MeaningVec, c: fol.Variable) -> List[MeaningVec]:
+        """
+        Returns the list of Meaning Vectors of proposition phi according to the assignment function g[c/x]
+        List: [phi_g[c/e1], phi_g[c/e2], ... , phi_g[c/en]]
+        """
+        entity_names = entity_names = [e.name for e in self.universe['entities']]
+        predicates = [phi.name.replace(c, PARSE(e)) for e in entity_names]
+        return [self.infer_meaningvec(pred) for pred in predicates]
+
     def exist(self, expression: MeaningVec, var: str) -> MeaningVec:
+        """
+        Existentially binds a propositional meaning vector for some variable.
+        """
         #detect to be bound constant/free variable, pick a new variable name
         to_be_bound = fol.Variable(var)
-        newvar = fol.Variable('z1')
-        if newvar in expression.name.variables() or expression.name.free():
-            newvar = fol.unique_variable(pattern=newvar)
+        newvar = fol.unique_variable()
 
         #make sure variable to be bound is valid
         assert expression.name is not None
         assert to_be_bound in expression.name.constants(), "Variable does not occur in expression"
 
-        #create a new assignment function (TODO: ghetto, NLTK has functionality for this)
-        #look up all the vectors associated with new assignment (TODO: Only works on atomic props)
-        entity_names = [e.name for e in self.universe['entities']]
-        predicates = [expression.name.replace(to_be_bound, PARSE(e)) for e in entity_names]
-        vectors = [self.infer_meaningvec(pred) for pred in predicates]
+        #look up all the vectors associated with new assignment
+        vectors = self.assignment_function(expression, to_be_bound)
 
         # Take disjunction over assignment
         exist = reduce(disjunction, vectors)
-        newname = PARSE(f'{SYM.EXISTS} {newvar}. {expression.name}')
+        newname = PARSE(f'{SYM.EXISTS} {newvar}. ({expression.name})')
         exist.name = newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False)
         return exist
 
+    def all(self, expression: MeaningVec, var: str) -> MeaningVec:
+        """
+        Universally binds a propostional meaning vector for some variable.
+        """
+        #detect to be bound constant/free variable, pick a new variable name
+        to_be_bound = fol.Variable(var)
+        newvar = fol.unique_variable()
+
+        #make sure variable to be bound is valid
+        assert expression.name is not None
+        assert to_be_bound in expression.name.constants(), "Variable does not occur in expression"
+
+        #look up all the vectors associated with new assignment
+        vectors = self.assignment_function(expression, to_be_bound)
+
+        # Take conjunction over assignment
+        all = reduce(conjunction, vectors)
+        newname = PARSE(f'{SYM.ALL} {newvar}. ({expression.name})')
+        all.name = newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False)
+        return all
+
     def getSemantics(self, word: str) -> MeaningSet:
+        """
+        Get the MeaningSet for a word in the meaning space
+        """
         relevantProps = [MeaningVec(vector, name=prop) for vector, prop in self.prop_list if word in prop]
         return set(relevantProps)
 
