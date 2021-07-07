@@ -1,55 +1,54 @@
 from dfs_semantics import *
-import sys
-import nltk.sem.logic as fol
-import re
+import pandas as pd
+from itertools import product
 
 # World
-world = MeaningSpace(file='model.observations')
+world = MeaningSpace(file='wollic.observations')
 
-fol_parser = fol.Expression.fromstring
+#operators
+AND = MeaningSet(PARSE('\\P \\Q \\x. (P(x) & Q(x))'), world)
 
-# Lexicon
-#mike = world.getSemantics('mike')
-#jess = world.getSemantics('jess')
-#read = lambda x : merge(world.getSemantics('read'), x)
-#tease = lambda x: lambda y: merge(merge(world.getSemantics(world, 'tease'), x), y)
+#predicates
+PAY = MeaningSet(PARSE('\\x. (pay(x))'), world)
+LEAVE = MeaningSet(PARSE('\\x. (leave(x))'), world)
+DRINK = MeaningSet(PARSE('\\y \\x. (drink(x, y))'), world)
+EAT = MeaningSet(PARSE('\\y \\x. (eat(x, y))'), world)
+ENTER = MeaningSet(PARSE('\\y \\x. (enter(x, y))'), world)
+ORDER = MeaningSet(PARSE('\\y \\x. (order(x, y))'), world)
+predicates = [PAY, LEAVE, DRINK, EAT, ENTER, ORDER]
 
-#assert len(read(mike)) == 1, "Propositional meaning set is not singleton"
-#assert list(read(mike))[0].vec == list(world.getSemantics('read(mike)'))[0].vec, "Lambda derivation does not match full propositional meaning"
+# entities
+ellen = PARSE('ellen')
+john = PARSE('john')
+beer = PARSE('beer')
+wine = PARSE('wine')
+restaurant = PARSE('restaurant')
+bar = PARSE('bar')
+pizza = PARSE('pizza')
+fries = PARSE('fries')
+entities = [ellen, john, beer, wine, restaurant, bar, pizza, fries]
 
+#everything
+all = [ellen, john, beer, wine, restaurant, bar, pizza, fries, PAY, LEAVE, DRINK, EAT, ENTER, ORDER]
 
-#u = ['mike', 'jess', 'winston']
-#someone_reads = world.exist(world.prop_dict[PARSE('tease(jess,mike)')], 'jess')
-#print(someone_reads)
-#print(negation(implication(someone_reads, world.prop_dict[PARSE('tease(mike,jess)')])))
+def setconjoin(a: MeaningSet, b: MeaningSet, world: MeaningSpace) -> MeaningSet:
+    cart = [conjunction(first, second) for first, second in product(a.close(), b.close())]
+    denotation = PARSE(str(a.denotation) + SYM.AND + str(b.denotation))
+    return MeaningSet(denotation, world, cart)
 
-#p = list(world.propositions)[0]
-#q = list(world.propositions)[1]
+def setnegate(a: MeaningSet, world: MeaningSpace) -> MeaningSet:
+    denotation = PARSE(f"{SYM.NOT}({str(a.denotation)})")
+    return MeaningSet(denotation, world, set([negation(prop) for prop in a.close()]))
 
-#pq = implication(conjunction(p, negation(q)), conjunction(p, q))
+print(world.infer_meaningvec(PARSE('(-(leave(john)))')))
 
-test = world.infer_meaningvec(PARSE('read(jess) & sleep(mike)'))
-print(test)
-print(test.vec)
-all = world.all(test, 'mike')
-print(all)
-print(all.vec)
-world._calls = 0
-all2 = world.all(all, 'jess')
-print(all2)
-print(all2.vec)
-print(world._calls)
+NOT = UnaryOperator(PARSE('\\P \\x. (-(P(x)))'), world, lambda X: set([negation(prop) for prop in X]))
+not2 = NOT(LEAVE).simplify()
+not3 = NOT(LEAVE)(ellen).simplify()
 
-#world.prettyprint()
-
-#assert entails(test, ex)
-#assert entails(ex, ex2)
-#assert entails(test, ex2)
-
-#one = world.infer_meaningvec(PARSE('exist z1. (read(z1) & sleep(jess))'))
-#print(world.calls)
-#world.calls = 0
-#two = world.infer_meaningvec(PARSE('exist z2. (exist z1. (read(z1) & sleep(z2)))'))
-#print(world.calls)
-
-#assert entails(one, two)
+print(type(NOT))
+print(NOT.close())
+print(type(not2))
+print(not2.close())
+print(type(not3))
+print(not3.close())
