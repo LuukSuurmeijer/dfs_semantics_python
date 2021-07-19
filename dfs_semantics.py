@@ -21,9 +21,25 @@ import string
 PARSE = fol.Expression.fromstring
 SYM = fol.Tokens()
 
+#exisentially closes all free variales in an expression
+def string_close_lambda(expression):
+    return PARSE(str(expression).replace(f'{SYM.LAMBDA}', f'{SYM.EXISTS} '))
+
+def string_close(expression):
+    free_vars = expression.free()
+    quantifiers =[f"{SYM.EXISTS} {str(var)}." for var in free_vars]
+    new_string = ' '.join(quantifiers) + str(expression)
+    return PARSE(new_string)
+
+def get_term(expression):
+    try:
+        return get_term(expression.term)
+    except AttributeError:
+        return expression
+
 def set_average(Set: set) -> np.array:
     matrix = set_to_matrix(Set)
-    return MeaningVec(np.sum(matrix, axis=1, keepdims=True) / len(Set), name=None)
+    return MeaningVec((np.sum(matrix, axis=1, keepdims=False) / len(Set)).astype(int).T, name=None)
 
 def marix_to_set(Matrix: np.array) -> set:
     return set(map(tuple, Matrix.T))
@@ -86,7 +102,7 @@ class MeaningVec:
         return False
 
     def __hash__(self):
-        return hash(repr(self))
+        return hash(tuple(self.vec))
 
     def __getitem__(self, index):
         return self.vec[index] #list lookup is faster than array lookup!
@@ -160,14 +176,10 @@ def inference(a: MeaningVec, b: MeaningVec) -> float:
 
 ###MeaningSet Object###
 class MeaningSet:
-    def __init__(self, denotation: str, world, vecs=None):
+    def __init__(self, denotation: str, world):
         self.denotation = denotation
         self.world = world
-        self.closure = PARSE(str(self.denotation.simplify()).replace(f'{SYM.LAMBDA}', f'{SYM.EXISTS} '))
-        if vecs:
-            self.Set = set(vecs)
-        else:
-            self.Set = None
+        self.closure = string_close_lambda(self.denotation.simplify())
 
     def __call__(self, other):
         if isinstance(other, fol.Expression):
@@ -192,36 +204,63 @@ class MeaningSet:
         return MeaningSet(self.denotation.simplify(), self.world, self.Set)
 
     def real(self):
-        return set_average(self.world.infer_meaningset(self.closure))
+        return set_average(self.close()) #set_average(self.world.infer_meaningset(self.close()))
 
 class UnaryOperator(MeaningSet):
-    def __init__(self, denotation: str, world, func, vecs=None):
+    def __init__(self, denotation: str, world, func):
         self.denotation = denotation
         self.world = world
         self.func = func
-        if vecs:
-            self.Set = set(vecs)
-        else:
-            self.Set = None
-        super().__init__(denotation, world, vecs)
+
+        self.closure = string_close_lambda(self.denotation.simplify())
+        self.FOL_content = get_term(self.denotation.simplify())
+        super().__init__(denotation, world)
 
     def __call__(self, other):
         if isinstance(other, fol.Expression):
             reduction = self.denotation(other)
         else:
             reduction = self.denotation(other.denotation)
-        return UnaryOperator(reduction, self.world, self.func, self.Set)
+        return UnaryOperator(reduction, self.world, self.func)
 
     def simplify(self):
-        return UnaryOperator(self.denotation.simplify(), self.world, self.func, self.Set)
+        return UnaryOperator(self.denotation.simplify(), self.world, self.func)
 
     def close(self):
-        print(self.denotation.negate())
         try:
-            content = self.world.infer_meaningset(self.denotation.negate())
-            return self.func(content)
-        except:
+            set_content = self.world.infer_meaningset(self.closure)
+            return self.func(set_content)
+        except KeyError:
             print("Higher order closure not implemented yet.")
+            return
+
+class BinaryOperator(MeaningSet):
+    def __init__(self, denotation: str, world, func):
+        self.denotation = denotation
+        self.world = world
+        self.func = func
+
+        self.FOL_content = get_term(self.denotation.simplify())
+        super().__init__(denotation, world)
+
+    def __call__(self, other):
+        if isinstance(other, fol.Expression):
+            reduction = self.denotation(other)
+        else:
+            reduction = self.denotation(other.denotation)
+        return BinaryOperator(reduction, self.world, self.func)
+
+    def simplify(self):
+        return BinaryOperator(self.denotation.simplify(), self.world, self.func)
+
+    def close(self):
+        try:
+            first = self.world.infer_meaningvec(string_close(self.FOL_content.first))
+            second = self.world.infer_meaningvec(string_close(self.FOL_content.second))
+            return self.func(self.world.infer_meaningset(first), self.world.infer_meaningset(second))
+        except KeyError:
+            print("Higher order closure not implemented yet.")
+            return
 
 ### Meaning Space object ###
 class MeaningSpace:
@@ -309,12 +348,6 @@ class MeaningSpace:
 
         return model_matrix, Set, prop_list
 
-    def printSet(self, Set):
-        try:
-            print(set([self.prop_list[elem][1] for elem in Set]))
-        except KeyError:
-            print(set([f'v_{i}' for i, elem in enumerate(Set)]))
-
     def prettyprint(self):
         rownames = [f"M{i}" for i, row in enumerate(self.matrix)]
         columnnames = [vector.name for vector in list(self.propositions)]
@@ -351,23 +384,26 @@ class MeaningSpace:
 
         #this function is memoized with the use of self.prop_dict
         if str_expression not in self.prop_dict:
-            #NLTK has no functionality for returning terms of a formula, so I do it a ghetto way
-            try: #see if its a logical connective
-                operator = expression.getOp()
-                split = str(expression).split(f' {operator} ')
-                assert len(split) == 2
-                first_term = PARSE(split[0][1:]) #fix parenthesis
-                second_term = PARSE(split[1][:-1])
-            except AttributeError: #otherwise maybe a quantifier
-                operator = expression.getQuantifier()
-                variable = expression.variable
-                term = PARSE(deconstruct_expression(str(expression)))
-                #introduce dummy variable, since it will be existentially closed anyway, always choose a unique dummy
-                dummy = [e for e in list(self.universe['entities']) if e not in term.constants()][0]
-                term = term.replace(variable, PARSE(dummy.name))
+            if isinstance(expression, fol.NegatedExpression):
+                operator = f'{SYM.NOT}'
+                term = expression.term
+            else:
+                try: #see if its a logical connective
+                    operator = expression.getOp()
+                    first_term = expression.first
+                    second_term = expression.second
+                except AttributeError: #otherwise maybe a quantifier
+                    operator = expression.getQuantifier()
+                    variable = expression.variable
+                    term = expression.term
+                    #introduce dummy variable, since it will be existentially closed anyway, always choose a unique dummy
+                    dummy = [e for e in list(self.universe['entities']) if e not in term.constants()][0]
+                    term = term.replace(variable, PARSE(dummy.name))
 
         #the recursive step
-            if operator == f'{SYM.AND}':
+            if operator == f'{SYM.NOT}':
+                self.prop_dict[str_expression] = negation(self.infer_meaningvec(term))
+            elif operator == f'{SYM.AND}':
                 self.prop_dict[str_expression] = conjunction(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
             elif operator == f'{SYM.OR}':
                 self.prop_dict[str_expression] = disjunction(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
