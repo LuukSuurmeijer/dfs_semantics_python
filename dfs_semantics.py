@@ -7,39 +7,22 @@ from functools import reduce
 import nltk.sem.logic as fol
 from collections import defaultdict
 import sys
-import re
-import string
+from parsing import *
+from MeaningVec import *
 """
  This file contains the base classes for the DFS datatypes:
-    - MeaningVec (Meaning Vectors representing propositions)
     - MeaningSpace (The DFS meaning space)
     - MeaningSet (Sets representing subpropositional meaning)
  And some additional functional functions
 """
 
-#Parsing first order logic.
-PARSE = fol.Expression.fromstring
-SYM = fol.Tokens()
-
-#exisentially closes all free variales in an expression
-def string_close_lambda(expression):
-    return PARSE(str(expression).replace(f'{SYM.LAMBDA}', f'{SYM.EXISTS} '))
-
-def string_close(expression):
-    free_vars = expression.free()
-    quantifiers =[f"{SYM.EXISTS} {str(var)}." for var in free_vars]
-    new_string = ' '.join(quantifiers) + str(expression)
-    return PARSE(new_string)
-
-def get_term(expression):
-    try:
-        return get_term(expression.term)
-    except AttributeError:
-        return expression
-
 def set_average(Set: set) -> np.array:
-    matrix = set_to_matrix(Set)
-    return MeaningVec((np.sum(matrix, axis=1, keepdims=False) / len(Set)).astype(int).T, name=None)
+    if len(Set) > 1:
+        return MeaningVec(reduce(np.add, Set) / len(Set), name='t')
+    else:
+        return MeaningVec(list(Set)[0], name='t')
+
+    #return MeaningVec((np.sum(matrix, axis=1, keepdims=False) / len(Set)).astype(int).T, name=None)
 
 def marix_to_set(Matrix: np.array) -> set:
     return set(map(tuple, Matrix.T))
@@ -47,132 +30,6 @@ def marix_to_set(Matrix: np.array) -> set:
 def set_to_matrix(Set):
     array = np.array([elem for elem in Set])
     return array.T
-
-def smart_replace(formula):
-    alphabet_list = list(string.ascii_lowercase)
-    reg = re.search(rf'((?:z(?:[0-9]*)(?: ))*(?:z(?:[0-9]*))\.)', formula)
-    if reg:
-        m = ' '.join(reg.groups(0)).strip('.').split(' ')
-        newvars = [alphabet_list[23+i] for i in range(len(m))]
-        for i in range(len(m)):
-            formula = formula.replace(m[i], newvars[i])
-    return formula
-
-
-def deconstruct_expression(expression: str) -> str:
-    """
-    Function to remove the outermost quantifier in a string formatted like an nltk.sem.logic.Expression
-    """
-    match = re.match(rf'({SYM.EXISTS}|{SYM.ALL}) (([a-z][0-9]*)(?: ))*(([a-z][0-9]*)(?:\.))', expression)
-    variablebinder = match[0].strip('.').split(' ')
-    quantifier = variablebinder[0]
-    variables = variablebinder[1:]
-
-    if len(variables) > 1: #if there are more than 1 variable, we need to only delete the first one
-        new_variables = variables[1:]
-        new_quantifier = quantifier + ' ' + ' '.join(new_variables) #this is bad, but what do?
-        expression = expression.strip(f'{variablebinder}')
-        return new_quantifier + expression
-
-    else: #if theres only one variable, we remove the whole quantifier
-        remove = ' '.join(variablebinder) + '.'
-        return expression.split(f'{remove}')[-1]
-
-def find_predicate(ex: str, var: fol.Variable) -> str:
-    match = re.search(rf'([a-z]+)(\((?:[a-z]+,)*{str(var)}(?:,[a-z]+)*\))', ex)
-    return match[1], match[2]
-
-### Meaning Vector Object ###
-class MeaningVec:
-    def __init__(self, values: np.array, name=None):
-        self.vec = np.array(values)
-        #self.tup = tuple(self.vec)
-        if isinstance(name, str):
-            self.name = PARSE(name)
-        elif isinstance(name, fol.Expression):
-            self.name = name
-        self.prob = np.sum(self.vec) / len(self.vec)
-
-    def __len__(self):
-        return len(self.vec)
-
-    def __eq__(self, other):
-        if isinstance(other, MeaningVec):
-            return (self.vec == other.vec).all()
-        return False
-
-    def __hash__(self):
-        return hash(tuple(self.vec))
-
-    def __getitem__(self, index):
-        return self.vec[index] #list lookup is faster than array lookup!
-
-    def __repr__(self):
-        return f"<{self.__class__.__name__} {self.name}>"
-
-    def __str__(self):
-        return f"{smart_replace(str(self.name))}"
-
-### Propositional Logic ###
-def negation(a: MeaningVec) -> MeaningVec:
-    if a.name:
-        newname = f'{SYM.NOT}{a.name}'
-    else:
-        newname = None
-    #return MeaningVec([int(not i) for i in a], name=newname)
-    return MeaningVec(1-a.vec, name=newname)
-
-def conjunction(a: MeaningVec, b: MeaningVec) -> MeaningVec:
-    if a.name and b.name:
-        newname = f'{a.name} {SYM.AND} {b.name}'
-    else:
-        newname = None
-    #return MeaningVec([i*j for i, j in zip(a, b)], name=newname)
-    return MeaningVec(a.vec*b.vec, name=newname)
-
-def disjunction(a: MeaningVec, b: MeaningVec) -> MeaningVec:
-    if a.name and b.name:
-        newname = f'{a.name} {SYM.OR} {b.name}'
-    else:
-        newname = None
-    #return MeaningVec(negation(conjunction(negation(a), negation(b))).vec, name=newname)
-    return MeaningVec(np.logical_or(a.vec, b.vec), name=newname) #numpy is faster than the above
-
-
-def implication(a: MeaningVec, b: MeaningVec) -> MeaningVec:
-    if a.name and b.name:
-        newname = f'{a.name} {SYM.IMP} {b.name}'
-    else:
-        newname = None
-    return MeaningVec(disjunction(negation(a), b).vec, name=newname)
-
-def equivalence(a: MeaningVec, b: MeaningVec) -> MeaningVec:
-    if a.name and b.name:
-        newname = f'{a.name} {SYM.IFF} {b.name}'
-    else:
-        newname = None
-    #return MeaningVec(conjunction(implication(a, b), implication(b, a)).vec, name=newname)
-    return MeaningVec(np.equal(a.vec, b.vec), name=newname)
-
-def entails(a: MeaningVec, b: MeaningVec) -> bool:
-    """ Returns True if the the vector implication of a --> b contains only True (ie. entailment) and False otherwise
-    """
-    #return int(True) if all(t == True for t in implication(a, b)) else int(False)
-    return np.all(implication(a, b).vec)
-
-### Probability theory ###
-def prob(a: MeaningVec) -> float:
-    #double of the attribute
-    return a.prob
-
-def conditional_prob(a: MeaningVec, b: MeaningVec) -> float:
-    return conjunction(a, b).prob / b.prob
-
-def inference(a: MeaningVec, b: MeaningVec) -> float:
-    if conditional_prob(a, b) > a.prob:
-        return (conditional_prob(a, b) - a.prob) / (1 - a.prob)
-    else:
-        return (conditional_prob(a, b) - a.prob) / a.prob
 
 ###MeaningSet Object###
 class MeaningSet:
@@ -201,7 +58,7 @@ class MeaningSet:
         return self.world.infer_meaningset(self.closure)
 
     def simplify(self):
-        return MeaningSet(self.denotation.simplify(), self.world, self.Set)
+        return MeaningSet(self.denotation.simplify(), self.world)
 
     def real(self):
         return set_average(self.close()) #set_average(self.world.infer_meaningset(self.close()))
@@ -317,18 +174,16 @@ class MeaningSpace:
         return ex.replace(var, PARSE(dummy.name)), dummy
 
     def is_atomic(self, expression: fol.Expression) -> bool:
+        """Returns true if expression is an atomic proposition
+        """
         if expression in [v.name for v in self.propositions]:
             return True
         else:
             return False
 
-    def is_defined(self, expression: fol.Expression) -> bool:
-        terms = list(expression.constants().union(expression.variables()))
-        predicate, arguments = find_predicate(str(expression), terms[0])
-        arguments = tuple([fol.Variable(item) for item in arguments.strip('(').strip(')').split(',')])
-        sys.exit()
-
     def readSpace(self, file):
+        """Read a space from a .observations file
+        """
         model_df = pd.read_csv(file, sep=' ', header=0)
         model_matrix = np.array(model_df)
         names = list(model_df.columns)
@@ -337,6 +192,8 @@ class MeaningSpace:
         return model_matrix, Set, prop_list
 
     def canonicalSpace(self, props):
+        """ Generates a fully informative space from a set of propositions (all combinations of truth values)
+        """
         space = [list(i) for i in product([0,1], repeat=len(props))]
 
         model_df = pd.DataFrame.from_records(space)

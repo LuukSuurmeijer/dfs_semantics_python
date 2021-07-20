@@ -1,10 +1,8 @@
-from dfs_semantics import *
 from parsing import *
+from dfs_semantics import *
 from MeaningVec import *
-import pandas as pd
-from itertools import product
-from nltk import Tree
-
+import matplotlib.pyplot as plt
+import sys
 
 # World
 world = MeaningSpace(file='worlds/wollic.observations')
@@ -51,36 +49,44 @@ def setdisjoin1(a: Set[MeaningVec], b: Set[MeaningVec]) -> Set:
 def setdisjoin2(a: Set[MeaningVec], b: Set[MeaningVec]) -> Set:
     return setnegate(setconjoin(setnegate(a), setnegate(b)))
 
-
 NOT = UnaryOperator(PARSE('\\P \\x. (-(P(x)))'), world, lambda X: set([negation(prop) for prop in X]))
 AND = BinaryOperator(PARSE('\\P \\Q \\x. (P(x) & Q(x))'), world, setconjoin)
 OR = BinaryOperator(PARSE('\\P \\Q \\x. (P(x) | Q(x))'), world, setdisjoin1)
 OR_functional = BinaryOperator(PARSE('\\P \\Q \\x. (P(x) | Q(x))'), world, lambda a, b: setnegate(setconjoin(setnegate(a), setnegate(b))))
 
-first = (OR(LEAVE)(ASKMENU))(ellen).real()
-second = (OR_functional(LEAVE)(ASKMENU))(ellen).real()
-# is functional completeness the same as disjunction?
-assert (OR(LEAVE)(ASKMENU))(ellen).close() == (OR_functional(LEAVE)(ASKMENU))(ellen).close()
-# are both the same as direct propositional disjunction?
-assert first == second == world.infer_meaningvec(PARSE('leave(ellen) | askmenu(ellen)'))
-print('Disjunction check :-)')
 
-print('\n', '=======================================================================', '\n')
+relevant_propositions = {'enter(john,bar)' : world.prop_dict['enter(john,bar)'],
+                        'enter(john,restaurant)': world.prop_dict['enter(john,restaurant)'],
+                        'enter(john,restaurant) & order(john,wine)' : world.infer_meaningvec(PARSE('(enter(john,restaurant) & order(john,wine))')),
+                        'enter(john,restaurant) & order(john,beer)' : world.infer_meaningvec(PARSE('(enter(john,restaurant) & order(john,beer))'))
+                        }
+
+labels = [key for key in list(relevant_propositions.keys())]
+
+sent = [AND, ORDER(wine), ORDER,  AND(ORDER(wine)), ENTER, ENTER(restaurant), (AND(ORDER(wine)))(ENTER(restaurant)), (AND(ORDER(wine))(ENTER(restaurant)))(john)]
+
+a = []
+for pred in sent:
+    l = []
+    for p in list(relevant_propositions.values()):
+        try:
+            l.append(inference(p, pred.simplify().real()))
+        except:
+            l.append(0)
+    l = np.array(l).reshape(4, 1)
+    a.append(l)
 
 
-and2 = AND(LEAVE).simplify()
-print(and2, ' '*(35-len(str(and2))), and2.close())
-and3 = (AND(LEAVE)(ASKMENU).simplify())
-print(and3, ' '*(35-len(str(and3))), and3.close())
-and4 = (AND(LEAVE)(ASKMENU))(ellen).simplify()
-print(and4, ' '*(35-len(str(and4))), and4.close())
-assert list(and4.close())[0] == world.infer_meaningvec(PARSE('(leave(ellen) & askmenu(ellen))'))
-print("Prob: ", list(and4.close())[0].prob)
-
-print('\n', '=======================================================================', '\n')
-
-not2 = NOT(LEAVE).simplify()
-not3 = NOT(LEAVE)(ellen).simplify()
-print(not2.close())
-print('\n')
-print(not3.close())
+for i in range(len(a)):
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    map = plt.get_cmap('RdYlGn')
+    mat = ax.matshow(a[i].T, cmap=map, vmin=-1, vmax=1)
+    ax.set_xticks(np.arange(4))
+    ax.set_yticks([])
+    ax.set_title(str(sent[i].simplify()))
+    ax.set_xticklabels(labels, rotation=18, fontsize=6)
+    ax.set_yticklabels([])
+    ax.tick_params(axis = "y", which = "both", bottom = False, top = False)
+    n = (str(sent[i].simplify())).replace(' ', '_')
+    plt.savefig(f'plots/{n}_reversed.pdf')

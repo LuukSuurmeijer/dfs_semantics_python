@@ -7,7 +7,7 @@ from functools import reduce
 
 
 # World
-world = MeaningSpace(file='wollic.observations')
+world = MeaningSpace(file='worlds/wollic.observations')
 
 #operators
 AND = MeaningSet(PARSE('\\P \\Q \\x. (P(x) & Q(x))'), world)
@@ -52,15 +52,15 @@ for vector in world.propositions:
 
 exist_cosine = []
 for predicate in predicates:
-    p = world.infer_meaningvec(predicate.closure).vec
-    neg_p = set_average(setnegate(predicate.close())).vec.T
-    exist_cosine.append(cosine_similarity(p, neg_p))
+    p = world.infer_meaningvec(predicate.closure)
+    neg_p = negation(p)
+    exist_cosine.append(cosine_similarity(p.vec, neg_p.vec))
 
 real_cosine = []
 for predicate in predicates:
     p = predicate.real()
     neg_p = set_average(setnegate(predicate.close())).vec.T
-    real_cosine.append(np.dot(p, neg_p))
+    real_cosine.append(cosine_similarity(p, neg_p))
 
 print("Propositional negation: ", prop_cosine)
 print("Exitential closure negation: ", exist_cosine)
@@ -83,3 +83,5 @@ for vec in neg_vectors:
 print('=============================================================')
 for vec in vectors:
     print(vec, ' '*(25-len(str(vec))), vec.prob)
+
+print(prob(neg_vectors_avg))
