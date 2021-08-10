@@ -8,6 +8,7 @@ import nltk.sem.logic as fol
 from collections import defaultdict
 import sys
 from parsing import *
+import statistics
 
 """
 This file contains functionality for Meaning vectors and vector logic
@@ -23,7 +24,7 @@ class MeaningVec:
         #self.tup = tuple(self.vec)
         if isinstance(name, str):
             self.name = PARSE(name)
-        elif isinstance(name, fol.Expression):
+        else:
             self.name = name
         self.prob = np.sum(self.vec) / len(self.vec)
 
@@ -99,10 +100,35 @@ def prob(a: np.array) -> float:
     return sum(a)/len(a)
 
 def conditional_prob(a: MeaningVec, b: MeaningVec) -> float:
+    """ conditional_prob(a, b) = P(A|B) """
     return conjunction(a, b).prob / b.prob
+
+def conditional_prob_raw(a: np.array, b: np.array) -> float:
+    """ conditional_prob(a, b) = P(A|B) """
+    return prob(a*b) / prob(b)
+
+def entropy(a: tuple) -> float:
+    if len(a) == 2:
+        return -1 * np.log2(conditional_prob(a[0], a[1]))
+    else:
+        return -1 * np.log2(a.prob)
+
+def conditional_entropy(tup: tuple) -> float:
+    return -1 * np.log2(conditional_prob(tup[0], tup[1]))
+
+def conditional_set_entropy(a: set, b: set) -> float:
+    return statistics.mean(map(entropy, product(a, b)))
 
 def inference(a: MeaningVec, b: MeaningVec) -> float:
     if conditional_prob(a, b) > a.prob:
         return (conditional_prob(a, b) - a.prob) / (1 - a.prob)
     else:
         return (conditional_prob(a, b) - a.prob) / a.prob
+
+def inference_raw(a: np.array, b: np.array) -> float:
+    posterior = conditional_prob_raw(a, b)
+    prior = prob(a)
+    if posterior > prior:
+        return (posterior - prior) / (1 - prior)
+    else:
+        return (posterior - prior) / prior

@@ -13,16 +13,17 @@ from MeaningVec import *
  This file contains the base classes for the DFS datatypes:
     - MeaningSpace (The DFS meaning space)
     - MeaningSet (Sets representing subpropositional meaning)
+    - UnaryOperator, BinaryOperator and Quantifier
  And some additional functional functions
 """
 
 def set_average(Set: set) -> np.array:
     if len(Set) > 1:
-        return MeaningVec(reduce(np.add, Set) / len(Set), name='t')
+        return reduce(np.add, Set) / len(Set)
+    elif len(Set) == 1:
+        return list(Set)[0]
     else:
-        return MeaningVec(list(Set)[0], name='t')
-
-    #return MeaningVec((np.sum(matrix, axis=1, keepdims=False) / len(Set)).astype(int).T, name=None)
+        return [0]
 
 def marix_to_set(Matrix: np.array) -> set:
     return set(map(tuple, Matrix.T))
@@ -46,7 +47,7 @@ class MeaningSet:
         return MeaningSet(reduction, self.world)
 
     def __len__(self):
-        return len(self.set)
+        return len(self.close())
 
     def __repr__(self):
         return f"<{self.__class__.__name__} {self.denotation}>"
@@ -61,10 +62,10 @@ class MeaningSet:
         return MeaningSet(self.denotation.simplify(), self.world)
 
     def real(self):
-        return set_average(self.close()) #set_average(self.world.infer_meaningset(self.close()))
+        return set_average(self.close())
 
 class UnaryOperator(MeaningSet):
-    def __init__(self, denotation: str, world, func):
+    def __init__(self, denotation: fol.Expression, world, func):
         self.denotation = denotation
         self.world = world
         self.func = func
@@ -84,15 +85,11 @@ class UnaryOperator(MeaningSet):
         return UnaryOperator(self.denotation.simplify(), self.world, self.func)
 
     def close(self):
-        try:
-            set_content = self.world.infer_meaningset(self.closure)
-            return self.func(set_content)
-        except KeyError:
-            print("Higher order closure not implemented yet.")
-            return
+        set_content = self.world.infer_meaningset(self.closure)
+        return self.func(set_content)
 
 class BinaryOperator(MeaningSet):
-    def __init__(self, denotation: str, world, func):
+    def __init__(self, denotation: fol.Expression, world, func):
         self.denotation = denotation
         self.world = world
         self.func = func
@@ -102,8 +99,10 @@ class BinaryOperator(MeaningSet):
 
     def __call__(self, other):
         if isinstance(other, fol.Expression):
+            #other = PARSE(flip(other))
             reduction = self.denotation(other)
         else:
+            #other.denotation = PARSE(flip(other.denotation))
             reduction = self.denotation(other.denotation)
         return BinaryOperator(reduction, self.world, self.func)
 
@@ -111,26 +110,53 @@ class BinaryOperator(MeaningSet):
         return BinaryOperator(self.denotation.simplify(), self.world, self.func)
 
     def close(self):
-        try:
-            first = self.world.infer_meaningvec(string_close(self.FOL_content.first))
-            second = self.world.infer_meaningvec(string_close(self.FOL_content.second))
-            return self.func(self.world.infer_meaningset(first), self.world.infer_meaningset(second))
-        except KeyError:
-            print("Higher order closure not implemented yet.")
-            return
+        first = self.world.infer_meaningvec(string_close(self.FOL_content.first))
+        second = self.world.infer_meaningvec(string_close(self.FOL_content.second))
+        return self.func(self.world.infer_meaningset(first.name), self.world.infer_meaningset(second.name))
+
+class Quantifier(MeaningSet):
+    def __init__(self, denotation: fol.Expression, world, func):
+        self.denotation = denotation
+        self.world = world
+        self.func = func
+        self.FOL_content = get_term(self.denotation.simplify())
+        super().__init__(denotation, world)
+
+    def __call__(self, other):
+        if isinstance(other, fol.Expression):
+            #other = PARSE(flip(other))
+            reduction = self.denotation(other)
+        else:
+            #other.denotation = PARSE(flip(other.denotation))
+            reduction = self.denotation(other.denotation)
+        return Quantifier(reduction, self.world, self.func)
+
+    def simplify(self):
+        return Quantifier(self.denotation.simplify(), self.world, self.func)
+
+    def close(self):
+        dummy = self.world.generate_dummy(self.FOL_content, self.denotation.variable)
+        newterm = self.FOL_content.replace(self.denotation.variable, PARSE(str(dummy)))
+        assignment = self.world.proto_assignment_function(self.world.infer_meaningvec(newterm), dummy)
+        return set(reduce(self.func, [self.world.infer_meaningset(string_close(prop.name)) for prop in assignment]))
 
 ### Meaning Space object ###
 class MeaningSpace:
-    def __init__(self, file=None, propositions=None):
+    def __init__(self, file=None, propositions=None, signature=None):
         if file:
             self.matrix, self.propositions, self.prop_list = self.readSpace(file) #matrix, list of MeaningVecs, list of tuples and strings
 
         elif propositions:
             self.matrix, self.propositions, self.prop_list = self.canonicalSpace(propositions)
 
+        self.type_signature = signature
         self.prop_dict = {str(prop.name) : prop for prop in self.propositions} #from fol expressions to MeaningVectors, TODO: I add all vectors that are computed here for memoization
         self.dim = self.matrix.shape
-        self.universe = self.find_universe() #dictionary of entities and relations
+        self.universe = self.find_universe(sig=self.type_signature) #dictionary of entities and relations
+
+        for entity in self.universe[T_PARSE('e')]:
+            self.type_signature[str(entity)] = 'e'
+
         self._calls=0
 
     def __len__(self):
@@ -139,47 +165,36 @@ class MeaningSpace:
     def __str__(self):
         return f"{set([self.prop_list[elem][1] for elem in matrix_to_set(self.matrix)])}"
 
-    def find_universe(self):
-        """
-        Construct the universe for this meaning space. The entities and the predicates (and their possible inputs)
-        """
-        universe = defaultdict(lambda : set())
+    def find_universe(self, sig=None):
+        universe = defaultdict(lambda : defaultdict(lambda : set()))
+        universe[T_PARSE('e')] = set()
         for prop in self.propositions:
             assert prop.name.is_atom(), "Only atomic propositions allowed in model definition"
             local_entities = prop.name.constants()
             local_predicate = list(prop.name.predicates())[0] #if only atomic propositions, then len of this HAS to be 1
-            universe['entities'].update(local_entities)
-            if len(local_entities) > 1:
-                #NLTK returns sets of variables, which are unordered. Order matters, so I parse the raw strings to infer the arguments
-                re_entities = re.search(rf'(?:\()[a-z]+(,[a-z]+)*(?:\))', str(prop.name))
-                local_entities = tuple([fol.Variable(elem) for elem in re_entities.group(0).strip('(').strip(')').split(',')])
-                assert prop.name.constants() == set(local_entities) # emergency check that parsing works
-                universe[local_predicate.name].add(local_entities)
-            else:
-                universe[local_predicate.name].update(local_entities)
+            typename = prop.name.typecheck(signature=sig)[str(local_predicate)]
+            universe[T_PARSE('e')].update(local_entities)
+            if not isinstance(typename, fol.EntityType):
+                if len(local_entities) > 1:
+                    #NLTK returns sets of variables, which are unordered. Order matters, so I parse the raw strings to infer the arguments
+                    re_entities = re.search(rf'(?:\()[a-z]+(,[a-z]+)*(?:\))', str(prop.name))
+                    local_entities = tuple([fol.Variable(elem) for elem in re_entities.group(0).strip('(').strip(')').split(',')])
+                    assert prop.name.constants() == set(local_entities) # emergency check that parsing works
+                    universe[typename][local_predicate.name].add(local_entities)
+                else:
+                    universe[typename][local_predicate.name].update(local_entities)
+
         return universe
 
-    def generate_dummy(self, ex: fol.Expression, var: fol.Variable) -> fol.Variable:
-        """ Pick a dummy variable that is consistent with the interpretation function of the predicate to which the argument belongs.
-        """
-        relevant_pred, arguments = find_predicate(str(ex), var)
-        local_entities = tuple([fol.Variable(elem) for elem in arguments.strip('(').strip(')').split(',')])
-        argarity = local_entities.index(var)
-        if argarity > 0:
-            possible_args = set([elem[argarity] for elem in list(self.universe[relevant_pred])])
-            dummy = list(possible_args)[0]
-        else:
-            dummy = list(self.universe[relevant_pred])[0][argarity]
+    #TODO: SLOPPY AND NOT GENERAL, only works for <e, <e, t>
+    def additionaltypes(self):
+        for pred in self.universe[T_PARSE('<e, <e, t>>')]:
+            first_e = set([tup[0] for tup in self.universe[T_PARSE('<e, <e, t>>')][pred]])
+            second_e = set([tup[1] for tup in self.universe[T_PARSE('<e, <e, t>>')][pred]])
+            for e1 in first_e:
+                for e2 in second_e:
+                    self.universe[T_PARSE('<e, t>')][f"{str(pred)}({str(e1)})"].add(e2)
 
-        return ex.replace(var, PARSE(dummy.name)), dummy
-
-    def is_atomic(self, expression: fol.Expression) -> bool:
-        """Returns true if expression is an atomic proposition
-        """
-        if expression in [v.name for v in self.propositions]:
-            return True
-        else:
-            return False
 
     def readSpace(self, file):
         """Read a space from a .observations file
@@ -187,6 +202,8 @@ class MeaningSpace:
         model_df = pd.read_csv(file, sep=' ', header=0)
         model_matrix = np.array(model_df)
         names = list(model_df.columns)
+        names2 = [flip(PARSE(name)) for name in names]
+        names = names2
         prop_list = [(tuple(np.array(model_df.iloc[:, index])), prop) for index, prop in enumerate(names)]
         Set = set([MeaningVec(np.array(model_df.iloc[:, index]), name=prop) for index, prop in enumerate(names)])
         return model_matrix, Set, prop_list
@@ -211,6 +228,43 @@ class MeaningSpace:
         df = pd.DataFrame(self.matrix, index=rownames, columns=columnnames)
         print(df)
 
+    def legal_entities(self, ex: fol.Expression, var: fol.Variable) -> set:
+        relevant_pred, arguments = find_predicate(str(ex), var)
+        local_entities = tuple([fol.Variable(elem) for elem in arguments.strip('(').strip(')').split(',')])
+        variable_location = local_entities.index(var)
+        argarity = len(local_entities)
+        predicate_type = ex.typecheck(signature=self.type_signature)[relevant_pred]
+        possible_args = list(self.universe[predicate_type][relevant_pred])
+        if argarity > 1:
+            legals = [tup[variable_location] for tup in possible_args]
+        else:
+            legals = [tup for tup in possible_args]
+        return set(legals)
+
+    def generate_dummy(self, ex: fol.Expression, var: fol.Variable) -> fol.Variable:
+        parsed_var = PARSE(var.name)
+        relevant_pred, arguments = find_predicate(str(ex), var)
+        if str(relevant_pred).startswith('F'): #TODO: NLTK type inferencer is fucking black magic, why does it not know what type this is
+            predicate_type = T_PARSE('<e, t>')
+        else:
+            predicate_type = ex.typecheck(signature=self.type_signature)[relevant_pred]
+        if isinstance(parsed_var, fol.FunctionVariableExpression):
+            possible_funcs = list(self.universe[predicate_type].items())
+            dummy = possible_funcs[0][0]
+        else:
+            legals = list(self.legal_entities(ex, var))
+            dummy = legals[0]
+
+        return dummy
+
+    def is_atomic(self, expression: fol.Expression) -> bool:
+        """Returns true if expression is an atomic proposition
+        """
+        if expression in [v.name for v in self.propositions]:
+            return True
+        else:
+            return False
+
     def modelEntailment(self, MeaningVec: MeaningVec) -> List[MeaningVec]:
         """
         Returns all atomic propositions in the meaning spaces that entail MeaningVec
@@ -234,9 +288,6 @@ class MeaningSpace:
             return self.prop_dict[str_expression]
         #If the meaning of an expression is not defined (contains free variables or unknown constants), return zero vector or raise an error
         elif not self.is_atomic(expression) and isinstance(expression, fol.ApplicationExpression):
-            possible_args = list(expression.constants().union(expression.variables()))
-            if find_predicate(str(expression), possible_args[0])[0] not in self.universe.keys():
-                raise KeyError('predicate not defined in universe')
             return MeaningVec(list(np.zeros(self.matrix.shape[0], dtype=int)), name=expression)
 
         #this function is memoized with the use of self.prop_dict
@@ -253,9 +304,9 @@ class MeaningSpace:
                     operator = expression.getQuantifier()
                     variable = expression.variable
                     term = expression.term
-                    #introduce dummy variable, since it will be existentially closed anyway, always choose a unique dummy
-                    dummy = [e for e in list(self.universe['entities']) if e not in term.constants()][0]
-                    term = term.replace(variable, PARSE(dummy.name))
+                    #introduce dummy variable, since it will be closed anyway, always choose a unique dummy consistent with interpretation function
+                    dummy = self.generate_dummy(term, variable)
+                    term = term.replace(variable, PARSE(str(dummy)))
 
         #the recursive step
             if operator == f'{SYM.NOT}':
@@ -269,9 +320,9 @@ class MeaningSpace:
             elif operator == f'{SYM.IFF}':
                 self.prop_dict[str_expression] = equivalence(self.infer_meaningvec(first_term), self.infer_meaningvec(second_term))
             elif operator == f'{SYM.EXISTS}':
-                self.prop_dict[str_expression] = self.exist(self.infer_meaningvec(term),  dummy.name)
+                self.prop_dict[str_expression] = self.quantify(self.infer_meaningvec(term),  str(dummy), mode='exist')
             elif operator == f'{SYM.ALL}':
-                self.prop_dict[str_expression] = self.all(self.infer_meaningvec(term), dummy.name)
+                self.prop_dict[str_expression] = self.quantify(self.infer_meaningvec(term), str(dummy), mode='univ')
 
         return self.prop_dict[str_expression]
 
@@ -281,60 +332,67 @@ class MeaningSpace:
         Only replaces with entities in the interpretation function of phi
         List: [phi_g[c/e1], phi_g[c/e2], ... , phi_g[c/en]]
         """
-
-        entity_names = [e.name for e in self.universe['entities']]
+        entity_names = [e.name for e in self.universe[T_PARSE('e')] if e in self.legal_entities(phi.name, c)]
         predicates = [phi.name.replace(c, PARSE(e)) for e in entity_names]
         #TODO: quick and dirty
-        return [self.infer_meaningvec(pred) for pred in predicates]
+        vecs = [self.infer_meaningvec(pred) for pred in predicates]
+        return vecs #only take into account atomic non-zero vectors
 
-    def exist(self, expression: MeaningVec, var: str) -> MeaningVec:
+    def proto_assignment_function(self, phi: MeaningVec, c: fol.Variable) -> List[MeaningVec]:
+        #do you want to replace a term of type e or higher order?
+        replacee = PARSE(str(c))
+        typename = T_PARSE(self.type_signature[str(c)])
+        if isinstance(c, fol.FunctionVariableExpression) or typename != T_PARSE('e'):
+            domain = self.universe[typename]
+            domain_names = [key for key, value in domain.items()]
+        elif isinstance(c, fol.IndividualVariableExpression) or typename == T_PARSE('e'):
+            domain = self.universe[T_PARSE('e')]
+            domain_names = [e.name for e in self.universe[T_PARSE('e')] if e in self.legal_entities(phi.name, c)]
+
+        predicates = [phi.name.replace(fol.Variable(str(c)), PARSE(e)) for e in domain_names]
+        vecs = [self.infer_meaningvec(pred) for pred in predicates]
+        return vecs
+
+
+    def quantify(self, expression: MeaningVec, var: str, mode: str) -> MeaningVec:
         """
         Existentially binds a propositional meaning vector for some variable.
         """
         #detect to be bound constant/free variable, pick a new variable name
         to_be_bound = fol.Variable(var)
-        newvar = fol.unique_variable()
+        typename = T_PARSE(self.type_signature[str(var)])
+
+        if typename != T_PARSE('e'):
+            newvar = fol.unique_variable(pattern=fol.Variable('Q'))
+        else:
+            newvar = fol.unique_variable(pattern=fol.Variable('x'))
 
         #make sure variable to be bound is valid
         assert expression.name is not None
-        assert to_be_bound in expression.name.constants(), "Variable does not occur in expression"
+        #assert to_be_bound in expression.name.constants().union(expression.name.predicates()), "Variable does not occur in expression"
 
         #look up all the vectors associated with new assignment
-        vectors = self.assignment_function(expression, to_be_bound)
+        vectors = self.proto_assignment_function(expression, to_be_bound)
+        # Take dis/conjunction over assignment
+        # If vectors is empty, that means that the assignment function returns only null-vectors and the result is also necessarily the null-vector
+        if mode == 'exist':
+            newname = PARSE(f'{SYM.EXISTS} {newvar}. ({expression.name})')
+            if not vectors:
+                return MeaningVec(list(np.zeros(self.matrix.shape[0], dtype=int)), name=newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False))
+            else:
+                quantified = reduce(disjunction, vectors)
+        elif mode == 'univ':
+            newname = PARSE(f'{SYM.ALL} {newvar}. ({expression.name})')
+            if not vectors:
+                return MeaningVec(list(np.zeros(self.matrix.shape[0], dtype=int)), name=newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False))
+            else:
+                quantified = reduce(conjunction, vectors)
 
-        # Take disjunction over assignment
-        exist = reduce(disjunction, vectors)
-        newname = PARSE(f'{SYM.EXISTS} {newvar}. ({expression.name})')
-        exist.name = newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False)
-        return exist
+        else:
+            raise TypeError('Invalid mode, must be either \'exist\' or \'univ\'')
 
-    def all(self, expression: MeaningVec, var: str) -> MeaningVec:
-        """
-        Universally binds a propostional meaning vector for some variable.
-        """
-        #detect to be bound constant/free variable, pick a new variable name
-        to_be_bound = fol.Variable(var)
-        newvar = fol.unique_variable()
-
-        #make sure variable to be bound is valid
-        assert expression.name is not None
-        assert to_be_bound in expression.name.constants(), "Variable does not occur in expression"
-
-        #look up all the vectors associated with new assignment
-        vectors = self.assignment_function(expression, to_be_bound)
-
-        # Take conjunction over assignment
-        all = reduce(conjunction, vectors)
-        newname = PARSE(f'{SYM.ALL} {newvar}. ({expression.name})')
-        all.name = newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False)
-        return all
-
-    def getSemantics(self, word: str) -> MeaningSet:
-        """
-        Get the MeaningSet for a word in the meaning space using disjunctive semantics
-        """
-        relevantProps = [MeaningVec(vector, name=prop) for vector, prop in self.prop_list if word in prop]
-        return set(relevantProps)
+        quantified.name = newname.replace(to_be_bound, PARSE(newvar.name), alpha_convert=False)
+        return quantified
 
     def infer_meaningset(self, expression: fol.Expression) -> MeaningSet:
         vectors = []
@@ -343,3 +401,19 @@ class MeaningSpace:
             if entails(p, meaningvec):
                 vectors.append(p)
         return set(vectors)
+
+    def getSemantics(self, word: str) -> MeaningSet:
+        """
+        Get the MeaningSet for a word in the meaning space using disjunctive semantics
+        """
+        relevantProps = [MeaningVec(vector, name=prop) for vector, prop in self.prop_list if word in prop]
+        return set(relevantProps)
+
+    def writevectors(self, props: list, outname: str):
+        with open(f"{outname}.vectors", "w") as f:
+            writer = csv.writer(f, delimiter=' ')
+            for prop in props:
+                l = list(prop.vec)
+                l.insert(0, str(prop.name).replace(',', '('))
+                #stringvec = str(prop.vec).strip('[').strip(']').replace('\n', ' ')
+                writer.writerow(l)

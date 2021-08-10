@@ -1,4 +1,5 @@
 from dfs_semantics import *
+from MeaningVec import *
 import pandas as pd
 from itertools import product
 from nltk import Tree
@@ -7,7 +8,10 @@ from functools import reduce
 
 
 # World
-world = MeaningSpace(file='worlds/wollic.observations')
+#for now you have to tell the type checker what variables you will be using
+typesig = {'leave' : '<e, t>', 'askmenu' : '<e, t>', 'pay' : '<e, t>', 'P' : '<e, t>', 'Q' : '<e, t>', 'R' : '<e, <e, t>>', 'S' : '<e, <e, t>>',
+        'order' : '<e, <e, t>>', 'drink' : '<e, <e, t>>', 'enter' : '<e, <e, t>>', 'eat' : '<e, <e, t>>'}
+world = MeaningSpace(file='worlds/wollic.observations', signature=typesig)
 
 #operators
 AND = MeaningSet(PARSE('\\P \\Q \\x. (P(x) & Q(x))'), world)
@@ -59,8 +63,8 @@ for predicate in predicates:
 real_cosine = []
 for predicate in predicates:
     p = predicate.real()
-    neg_p = set_average(setnegate(predicate.close())).vec.T
-    real_cosine.append(cosine_similarity(p, neg_p))
+    neg_p = set_average(setnegate(predicate.close()))
+    real_cosine.append((cosine_similarity(p, neg_p), predicate, prob(p)))
 
 print("Propositional negation: ", prop_cosine)
 print("Exitential closure negation: ", exist_cosine)
@@ -84,4 +88,13 @@ print('=============================================================')
 for vec in vectors:
     print(vec, ' '*(25-len(str(vec))), vec.prob)
 
-print(prob(neg_vectors_avg))
+#print(neg_vectors_avg + vectors_avg)
+#TODO: Fuzzy negatie
+
+print("lolol")
+for predicate in predicates:
+    vectors = predicate.close()
+    neg_vectors = setnegate(predicate.close())
+    vectors_avg = reduce(np.add, vectors) / len(vectors)
+    neg_vectors_avg = reduce(np.add, neg_vectors) / len(neg_vectors)
+    print(predicate, np.mean(vectors_avg), np.mean(neg_vectors_avg), np.mean(vectors_avg) + np.mean(neg_vectors_avg))

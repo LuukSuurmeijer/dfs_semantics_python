@@ -10,14 +10,21 @@ This file contains functionality for parsing and dealing with first order logic 
 
 #Parsing first order logic.
 PARSE = fol.Expression.fromstring
+T_PARSE = fol.Type.fromstring
 SYM = fol.Tokens()
+
+def flip(expression: fol.Expression):
+    flipped_args = [str(arg) for arg in list(reversed(expression.uncurry()[1]))]
+    func = expression.uncurry()[0]
+    newstring = f"{str(func)}({','.join(flipped_args)})"
+    return newstring
 
 #exisentially closes all free variales in an expression
 def string_close_lambda(expression: fol.Expression) -> fol.Expression:
     return PARSE(str(expression).replace(f'{SYM.LAMBDA}', f'{SYM.EXISTS} '))
 
 def string_close(expression: fol.Expression) -> fol.Expression:
-    free_vars = expression.free()
+    free_vars = sorted(list(expression.free())) #predicates need to always come first, hence sort the variables alphabetically
     quantifiers =[f"{SYM.EXISTS} {str(var)}." for var in free_vars]
     new_string = ' '.join(quantifiers) + str(expression)
     return PARSE(new_string)
@@ -28,16 +35,40 @@ def get_term(expression: fol.Expression) -> fol.Expression:
     except AttributeError:
         return expression
 
+def get_property_type(t : fol.ComplexType, typelist: list) -> list:
+    while not t.matches(T_PARSE('<e, t>')):
+        try:
+            typelist.append(t.first)
+            t = t.second
+        except AttributeError:
+            return False
+
+    return typelist
+
+
+def get_arguments(expression: fol.Expression):
+    if isinstance(expression, fol.ApplicationExpression):
+        return expression.uncurry()
+
 def smart_replace(formula: str) -> str:
     alphabet_list = list(string.ascii_lowercase)
-    reg = re.search(rf'((?:z(?:[0-9]*)(?: ))*(?:z(?:[0-9]*))\.)', formula)
+    #first order variables
+    reg = re.findall(rf'((?:z(?:[0-9]+)(?: ))*(?:z(?:[0-9]+))(?:\.*))', formula)
     if reg:
-        m = ' '.join(reg.groups(0)).strip('.').split(' ')
-        newvars = [alphabet_list[23+i] for i in range(len(m))]
+        m = [item.strip('.') for item in list(set(reg))]
+        newvars = [alphabet_list[((23+i) % (len(alphabet_list)))] for i in range(len(m))]
+        for i in range(len(m)):
+            formula = formula.replace(m[i], newvars[i])
+
+    #second order variables
+    reg = re.findall(rf'((?:F(?:[0-9]+)(?: ))*(?:F(?:[0-9]+))(?:\.*))', formula)
+    alphabet_list = list(string.ascii_uppercase)
+    if reg:
+        m = [item.strip('.') for item in list(set(reg))]
+        newvars = [alphabet_list[((15+i) % (len(alphabet_list)))] for i in range(len(m))]
         for i in range(len(m)):
             formula = formula.replace(m[i], newvars[i])
     return formula
-
 
 def deconstruct_expression(expression: str) -> str:
     """
@@ -59,5 +90,12 @@ def deconstruct_expression(expression: str) -> str:
         return expression.split(f'{remove}')[-1]
 
 def find_predicate(ex: str, var: fol.Variable) -> str:
-    match = re.search(rf'([a-z]+)(\((?:[a-z]+,)*{str(var)}(?:,[a-z]+)*\))', ex)
+    parsed_var = PARSE(str(var))
+    if isinstance(parsed_var, fol.FunctionVariableExpression):
+        match = re.search(rf'({str(var)})(\((?:[a-z]+[0-9]*,*)+)\)', ex)
+    else:
+        match = re.search(rf'([A-z]+)(\((?:[a-z]+[0-9]*,)*{str(var)}(?:,[a-z]+[0-9]*)*\))', ex)
     return match[1], match[2]
+
+def unscramble_bullshit(ex: fol.Expression):
+    pass
